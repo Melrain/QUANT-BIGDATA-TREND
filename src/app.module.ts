@@ -2,9 +2,11 @@ import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ConfigModule } from '@nestjs/config';
+import { InfraModule } from './infra/infra.module';
+import { CollectorModule } from './collector/collector.module';
 
 @Module({
-  imports: [ConfigModule],
+  imports: [ConfigModule, InfraModule, CollectorModule],
   controllers: [AppController],
   providers: [AppService],
 })

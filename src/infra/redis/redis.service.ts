@@ -30,7 +30,9 @@ export class RedisService implements OnModuleDestroy, OnModuleInit {
       connectTimeout: 5000,
     };
     this.client = new Redis(url, options);
-    this.logger.log('Connecting to Redis...');
+    this.logger.log(
+      `✅ Redis client ready: ${this.prefix} (ttl=${ttlDays} days)`,
+    );
   }
 
   onModuleDestroy() {
