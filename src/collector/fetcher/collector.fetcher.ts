@@ -13,6 +13,7 @@ export class CollectorFetcher {
     const ep = OKX_BIGDATA_ENDPOINTS.takerVolume;
     const data = await this.http.get<{ data: any[] }>(ep.path, ep.params(ccy));
     this.logger.log(`Fetched ${data.data?.length ?? 0} rows for ${ccy}`);
+
     return data.data ?? [];
   }
 }

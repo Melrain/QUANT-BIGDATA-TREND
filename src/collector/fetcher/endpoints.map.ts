@@ -1,6 +1,6 @@
 export const OKX_BIGDATA_ENDPOINTS = {
   takerVolume: {
-    path: '/api/v5/rubik/stat/contracts/taker-volume',
+    path: '/api/v5/rubik/stat/taker-volume',
     params: (ccy: string) => ({
       ccy,
       instType: 'CONTRACTS',
