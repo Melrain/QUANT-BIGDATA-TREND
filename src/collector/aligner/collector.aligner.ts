@@ -17,3 +17,10 @@ export class CollectorAligner {
       .filter((r) => r.ts <= cutoff);
   }
 }
+
+export interface AlignedMetric {
+  metric: string;
+  sym: string;
+  ts: number;
+  val: number;
+}

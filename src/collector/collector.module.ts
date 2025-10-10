@@ -5,17 +5,27 @@ import { ProbeController } from './probe.controller';
 import { CollectorScheduler } from './scheduler/collector.scheduler';
 import { CollectorParser } from './parser/collector.parser';
 import { CollectorAligner } from './aligner/collector.aligner';
+import { CollectorWriter } from './writer/collector.writer';
+import { MongoModule } from '@/infra/mongo/mongo.module';
 
 @Module({
-  imports: [],
+  imports: [MongoModule],
   controllers: [ProbeController],
   providers: [
+    CollectorWriter,
     SymbolRegistry,
     CollectorParser,
     CollectorAligner,
     CollectorFetcher,
     CollectorScheduler,
   ],
-  exports: [],
+  exports: [
+    CollectorWriter,
+    CollectorFetcher,
+    CollectorAligner,
+    CollectorParser,
+    CollectorScheduler,
+    SymbolRegistry,
+  ],
 })
 export class CollectorModule {}
