@@ -42,22 +42,20 @@ export class CollectorScheduler implements OnModuleInit {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call
   @Cron(process.env.CRON_COLLECT ?? '*/1 * * * *')
   async tick() {
     if (this.running) {
-      this.logger.warn('Previous tick still running, skip this schedule.');
+      this.logger.warn('Previous tick still running, skip.');
       return;
     }
     this.running = true;
-
     try {
-      const sym = this.symbols.getAll()[0];
-      const asset = sym.split('-')[0];
+      const sym = this.symbols.getAll()[0]; // e.g. 'BTC-USDT-SWAP'
+      // const asset = sym.split('-')[0];   // ← 不再用
 
       // 1) taker-volume
       try {
-        const raw = await this.fetcher.fetchTakerVolume(asset);
+        const raw = await this.fetcher.fetchTakerVolume(sym); // ← 用 sym
         const parsed = this.parser.parseTakerVolume(raw, sym);
         await this.alignAndPersist(parsed, 'TAKER-VOLUME');
       } catch (err) {
@@ -66,7 +64,7 @@ export class CollectorScheduler implements OnModuleInit {
 
       // 2) OI & Vol
       try {
-        const raw = await this.fetcher.fetchOpenInterestVolume(asset);
+        const raw = await this.fetcher.fetchOpenInterestVolume(sym); // ← 用 sym
         const parsed = this.parser.parseOpenInterestVolume(raw, sym);
         await this.alignAndPersist(parsed, 'OI/VOL');
       } catch (err) {
@@ -75,7 +73,7 @@ export class CollectorScheduler implements OnModuleInit {
 
       // 3) LongShort ALL
       try {
-        const raw = await this.fetcher.fetchLongShortAll(asset);
+        const raw = await this.fetcher.fetchLongShortAll(sym); // ← 用 sym
         const parsed = this.parser.parseLongShortAll(raw, sym);
         await this.alignAndPersist(parsed, 'LS-ALL');
       } catch (err) {
@@ -84,7 +82,7 @@ export class CollectorScheduler implements OnModuleInit {
 
       // 4) LongShort ELITE
       try {
-        const raw = await this.fetcher.fetchLongShortElite(asset);
+        const raw = await this.fetcher.fetchLongShortElite(sym); // ← 用 sym
         const parsed = this.parser.parseLongShortElite(raw, sym);
         await this.alignAndPersist(parsed, 'LS-ELITE');
       } catch (err) {
