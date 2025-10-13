@@ -1,27 +1,30 @@
-import { Global, Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
-import { ConfigService } from '@nestjs/config';
-import { MongoService } from './mongo.service';
+import { ConfigService, ConfigModule } from '@nestjs/config';
 
+import { Bar, BarSchema } from './schemas/bar.schema';
 import { Status, StatusSchema } from './schemas/status.schema';
-import { Bar, BarSchema } from './schemas/bar.schemat';
 
-@Global()
 @Module({
   imports: [
+    ConfigModule,
+    // 连接 Mongo（支持 .env 配置）
     MongooseModule.forRootAsync({
+      imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (cfg: ConfigService) => ({
-        uri: cfg.get<string>('MONGO_URL') ?? 'mongodb://127.0.0.1:27017/quant',
-        dbName: cfg.get<string>('MONGO_DB') ?? 'quant',
+        uri: cfg.get<string>('mongo.uri') ?? 'mongodb://127.0.0.1:27017/quant',
+        // 这里可按需加其他 mongoose 连接参数
+        // dbName: cfg.get<string>('mongo.db') ?? 'quant',
       }),
     }),
+
+    // 注册集合
     MongooseModule.forFeature([
       { name: Bar.name, schema: BarSchema },
       { name: Status.name, schema: StatusSchema },
     ]),
   ],
-  providers: [MongoService],
-  exports: [MongoService],
+  exports: [MongooseModule],
 })
 export class MongoModule {}

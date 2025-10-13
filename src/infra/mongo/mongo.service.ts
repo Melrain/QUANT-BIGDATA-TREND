@@ -4,7 +4,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 
 import { Status } from './schemas/status.schema';
-import { Bar } from './schemas/bar.schemat';
+import { Bar } from './schemas/bar.schema';
 
 @Injectable()
 export class MongoService {

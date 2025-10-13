@@ -1,76 +1,154 @@
+// src/collector/fetcher/endpoints.map.ts
+
 /**
- * OKX Rubik BigData endpoints (with fallback)
+ * OKX Rubik BigData endpoints (clean, direct-connect)
  * 约定：
- * - 合约口径（包含 "/contracts/" 或 "-contract"）→ 同时传 { instId, ccy, period }
- * - 普通口径 → 传 { ccy, period }
+ *  - 合约口径：统一传 { instId: 'BTC-USDT-SWAP', ccy: 'BTC', period: '5m' }
+ *  - 现货口径：统一传 { ccy: 'BTC', period: '5m' }
+ *  - DEFAULT_PERIOD 可由环境变量 OKX_RUBIK_PERIOD 覆盖
  */
+
+const DEFAULT_PERIOD = process.env.OKX_RUBIK_PERIOD ?? '5m';
+
+type BuildParams = (sym: string, path: string) => Record<string, any>;
+
 export const OKX_BIGDATA_ENDPOINTS = {
-  // 1) TAKer Volume
-  takerVolume: {
-    paths: [
-      '/api/v5/rubik/stat/taker-volume-contract', // 合约：官方文档要求 instId（我们同时带 ccy）
-      '/api/v5/rubik/stat/contracts/taker-volume', // 合约（部分环境）
-      '/api/v5/rubik/stat/taker-volume', // 普通口径（fallback）
-    ] as const,
-    buildParams: (sym: string, path: string) => {
-      const [ccy] = sym.split('-'); // 'BTC-USDT-SWAP' -> 'BTC'
-      const isContract =
-        /\/contracts?\//.test(path) || path.includes('-contract');
-      return isContract
-        ? { instId: sym, ccy, period: '5m' } // 关键：两者同传，避免 400: ccy empty
-        : { ccy, period: '5m' };
-    },
-    metrics: ['taker_vol_buy', 'taker_vol_sell'],
+  /** 支持列表（可用于动态发现可拉取的币/合约） */
+  supportCoins: {
+    paths: ['/api/v5/rubik/stat/trading-data/support-coin'] as const,
+    buildParams: (() => ({})) as BuildParams,
+    metrics: [] as const, // 仅用于注册，不入 bars
   },
 
-  // 2) Open Interest & Contracts Volume
-  openInterestVolume: {
-    paths: [
-      '/api/v5/rubik/stat/contracts/open-interest-volume', // 合约优先
-      '/api/v5/rubik/stat/open-interest-volume', // 普通 fallback
-    ] as const,
-    buildParams: (sym: string, path: string) => {
-      const [ccy] = sym.split('-');
-      const isContract =
-        /\/contracts?\//.test(path) || path.includes('-contract');
-      return isContract
-        ? { instId: sym, ccy, period: '5m' }
-        : { ccy, period: '5m' };
-    },
-    metrics: ['open_interest', 'contracts_volume'],
+  /** 合约 OI 历史（可做初始化/长回测；begin/end 可按需外部补充） */
+  openInterestHistory: {
+    paths: ['/api/v5/rubik/stat/contracts/open-interest-history'] as const,
+    buildParams: ((sym: string) => {
+      const [ccy] = sym.split('-'); // 'BTC-USDT-SWAP' → 'BTC'
+      return { instId: sym, ccy, period: DEFAULT_PERIOD };
+    }) as BuildParams,
+    metrics: ['oi_hist'] as const, // 你可在 parser 里拆更细
   },
 
-  // 3) Long/Short Account Ratio (All Users)
-  longShortAll: {
-    paths: [
-      '/api/v5/rubik/stat/contracts/long-short-account-ratio', // 合约
-      '/api/v5/rubik/stat/long-short-account-ratio', // 普通
-    ] as const,
-    buildParams: (sym: string, path: string) => {
+  /** 现货 Taker（可选做共振/背离过滤） */
+  takerVolumeSpot: {
+    paths: ['/api/v5/rubik/stat/taker-volume'] as const,
+    buildParams: ((sym: string) => {
       const [ccy] = sym.split('-');
-      const isContract =
-        /\/contracts?\//.test(path) || path.includes('-contract');
-      return isContract
-        ? { instId: sym, ccy, period: '5m' }
-        : { ccy, period: '5m' };
-    },
-    metrics: ['longshort_all_acc', 'longshort_all_pos'],
+      return { ccy, period: DEFAULT_PERIOD };
+    }) as BuildParams,
+    metrics: ['taker_vol_buy_spot', 'taker_vol_sell_spot'] as const,
   },
 
-  // 4) Long/Short Ratio (Elite / Top Traders)
-  longShortElite: {
+  /** 合约 Taker（核心） */
+  takerVolumeContract: {
     paths: [
-      '/api/v5/rubik/stat/contracts/long-short-ratio', // 合约
-      '/api/v5/rubik/stat/long-short-ratio', // 普通
+      '/api/v5/rubik/stat/taker-volume-contract', // 主口径
+      '/api/v5/rubik/stat/contracts/taker-volume', // 兼容口径
     ] as const,
-    buildParams: (sym: string, path: string) => {
+    buildParams: ((sym: string) => {
       const [ccy] = sym.split('-');
-      const isContract =
-        /\/contracts?\//.test(path) || path.includes('-contract');
-      return isContract
-        ? { instId: sym, ccy, period: '5m' }
-        : { ccy, period: '5m' };
-    },
-    metrics: ['longshort_elite_acc', 'longshort_elite_pos'],
+      return { instId: sym, ccy, period: DEFAULT_PERIOD };
+    }) as BuildParams,
+    metrics: ['taker_vol_buy', 'taker_vol_sell'] as const,
+  },
+
+  /** 融资融券比（现货情绪，选做） */
+  marginLoanRatio: {
+    paths: ['/api/v5/rubik/stat/margin/loan-ratio'] as const,
+    buildParams: ((sym: string) => {
+      const [ccy] = sym.split('-');
+      return { ccy, period: DEFAULT_PERIOD };
+    }) as BuildParams,
+    metrics: ['margin_loan_ratio'] as const,
+  },
+
+  /** 合约 OI 与成交量（核心） */
+  openInterestVolumeContracts: {
+    paths: ['/api/v5/rubik/stat/contracts/open-interest-volume'] as const,
+    buildParams: ((sym: string) => {
+      const [ccy] = sym.split('-');
+      return { instId: sym, ccy, period: DEFAULT_PERIOD };
+    }) as BuildParams,
+    metrics: ['open_interest', 'contracts_volume'] as const,
+  },
+
+  /** 全体用户 多空账户比（合约口径优先） */
+  longShortAllAccounts: {
+    paths: [
+      '/api/v5/rubik/stat/contracts/long-short-account-ratio-contract',
+      '/api/v5/rubik/stat/contracts/long-short-account-ratio',
+    ] as const,
+    buildParams: ((sym: string) => {
+      const [ccy] = sym.split('-');
+      return { instId: sym, ccy, period: DEFAULT_PERIOD };
+    }) as BuildParams,
+    metrics: ['longshort_all_acc'] as const,
+  },
+
+  /** 精英（Top Trader）多空 —— 账户数比 */
+  longShortEliteAccountTopTrader: {
+    paths: [
+      '/api/v5/rubik/stat/contracts/long-short-account-ratio-contract-top-trader',
+    ] as const,
+    buildParams: ((sym: string) => {
+      const [ccy] = sym.split('-');
+      return { instId: sym, ccy, period: DEFAULT_PERIOD };
+    }) as BuildParams,
+    metrics: ['longshort_elite_acc'] as const,
+  },
+
+  /** 精英（Top Trader）多空 —— 持仓量比 */
+  longShortElitePositionTopTrader: {
+    paths: [
+      '/api/v5/rubik/stat/contracts/long-short-position-ratio-contract-top-trader',
+    ] as const,
+    buildParams: ((sym: string) => {
+      const [ccy] = sym.split('-');
+      return { instId: sym, ccy, period: DEFAULT_PERIOD };
+    }) as BuildParams,
+    metrics: ['longshort_elite_pos'] as const,
+  },
+
+  // ======== 期权分组（P2，可按需启用） ========
+  optionOpenInterestVolume: {
+    paths: ['/api/v5/rubik/stat/option/open-interest-volume'] as const,
+    buildParams: ((sym: string) => {
+      const [ccy] = sym.split('-');
+      return { ccy, period: DEFAULT_PERIOD };
+    }) as BuildParams,
+    metrics: ['opt_oi', 'opt_vol'] as const,
+  },
+  optionOpenInterestVolumeRatio: {
+    paths: ['/api/v5/rubik/stat/option/open-interest-volume-ratio'] as const,
+    buildParams: ((sym: string) => {
+      const [ccy] = sym.split('-');
+      return { ccy, period: DEFAULT_PERIOD };
+    }) as BuildParams,
+    metrics: ['opt_oi_ratio'] as const,
+  },
+  optionOpenInterestVolumeExpiry: {
+    paths: ['/api/v5/rubik/stat/option/open-interest-volume-expiry'] as const,
+    buildParams: ((sym: string) => {
+      const [ccy] = sym.split('-');
+      return { ccy, period: DEFAULT_PERIOD };
+    }) as BuildParams,
+    metrics: ['opt_oi_expiry'] as const,
+  },
+  optionOpenInterestVolumeStrike: {
+    paths: ['/api/v5/rubik/stat/option/open-interest-volume-strike'] as const,
+    buildParams: ((sym: string) => {
+      const [ccy] = sym.split('-');
+      return { ccy, period: DEFAULT_PERIOD };
+    }) as BuildParams,
+    metrics: ['opt_oi_strike'] as const,
+  },
+  optionTakerBlockVolume: {
+    paths: ['/api/v5/rubik/stat/option/taker-block-volume'] as const,
+    buildParams: ((sym: string) => {
+      const [ccy] = sym.split('-');
+      return { ccy, period: DEFAULT_PERIOD };
+    }) as BuildParams,
+    metrics: ['opt_block_vol_buy', 'opt_block_vol_sell'] as const,
   },
 } as const;
