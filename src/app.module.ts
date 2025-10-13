@@ -5,6 +5,7 @@ import { ConfigModule } from '@nestjs/config';
 import { InfraModule } from './infra/infra.module';
 import { CollectorModule } from './collector/collector.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { OkxTradeService } from './okx-trade/okx-trade.service';
 
 @Module({
   imports: [
@@ -16,6 +17,6 @@ import { ScheduleModule } from '@nestjs/schedule';
     CollectorModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, OkxTradeService],
 })
 export class AppModule {}
