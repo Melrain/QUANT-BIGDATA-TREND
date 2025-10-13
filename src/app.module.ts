@@ -6,6 +6,8 @@ import { InfraModule } from './infra/infra.module';
 import { CollectorModule } from './collector/collector.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { OkxTradeService } from './okx-trade/okx-trade.service';
+import { FeaturesModule } from './features/features.module';
+import { SignalsModule } from './signal/signal.module';
 
 @Module({
   imports: [
@@ -15,6 +17,8 @@ import { OkxTradeService } from './okx-trade/okx-trade.service';
     }),
     InfraModule,
     CollectorModule,
+    FeaturesModule,
+    SignalsModule,
   ],
   controllers: [AppController],
   providers: [AppService, OkxTradeService],

@@ -28,7 +28,7 @@ export class Status {
   durations?: Record<string, number>; // 各任务耗时 ms，如 { taker: 120, oi: 180, ... }
 
   @Prop({ type: Object, default: {} })
-  errors?: Record<string, string>; // { 'OI/VOL': '50014', ... }
+  errorMap?: Record<string, string>; // { 'OI/VOL': '50014', ... }
 
   @Prop({ type: Boolean, default: false })
   degraded?: boolean; // 本轮是否降级运行（例如大量空返回）
