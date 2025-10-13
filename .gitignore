@@ -54,3 +54,13 @@ pids
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# =========================================
+# 🧠 Redis / MongoDB 数据文件
+# =========================================
+data/mongo/
+data/redis/
+dump.rdb
+appendonly.aof
+*.rdb
+*.aof
