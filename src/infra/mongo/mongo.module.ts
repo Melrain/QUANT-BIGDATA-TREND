@@ -7,19 +7,37 @@ import { Status, StatusSchema } from './schemas/status.schema';
 
 @Module({
   imports: [
-    ConfigModule,
-    // 连接 Mongo（支持 .env 配置）
+    ConfigModule, // 确保 AppModule 里用了 ConfigModule.forRoot(...)
     MongooseModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (cfg: ConfigService) => ({
-        uri: cfg.get<string>('mongo.uri') ?? 'mongodb://127.0.0.1:27017/quant',
-        // 这里可按需加其他 mongoose 连接参数
-        // dbName: cfg.get<string>('mongo.db') ?? 'quant',
-      }),
+      useFactory: (cfg: ConfigService) => {
+        // 1) 只认 MONGO_URL，不再用自定义的 mongo.uri
+        const uri = cfg.get<string>('MONGO_URL') ?? process.env.MONGO_URL ?? '';
+
+        if (!uri) {
+          // 2) 绝不回退到 localhost，直接报错以免误连 127.0.0.1
+          throw new Error(
+            'MONGO_URL is not set. Refusing to fallback to localhost.',
+          );
+        }
+
+        const dbName =
+          cfg.get<string>('MONGO_DB') ?? process.env.MONGO_DB ?? 'quant';
+
+        return {
+          uri,
+          dbName,
+          // Railway 内网连单节点更稳
+          directConnection: true,
+          serverSelectionTimeoutMS: 30_000,
+          // 按需加：
+          // authSource 可以直接放在 uri 里，如 ?authSource=admin
+          // user/password 也建议放在 uri 里
+        };
+      },
     }),
 
-    // 注册集合
     MongooseModule.forFeature([
       { name: Bar.name, schema: BarSchema },
       { name: Status.name, schema: StatusSchema },
