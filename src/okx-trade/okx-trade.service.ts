@@ -507,4 +507,29 @@ export class OkxTradeService implements OnModuleInit {
     const clean = id.replace(/[^A-Za-z0-9]/g, '').slice(0, 32);
     return clean || undefined;
   }
+
+  // src/infra/okx/okx-trade.service.ts （或你放 OKX 服务的地方）
+  async getTickerSnapshot(instIdRaw: string): Promise<{
+    last?: number;
+    bid?: number;
+    ask?: number;
+    ts?: number;
+  } | null> {
+    const instId = this.normalizeInstId(instIdRaw);
+    const path = '/api/v5/market/ticker';
+    const qs = `?instId=${encodeURIComponent(instId)}`;
+    // ✅ 公共行情接口不需要签名
+    const { data } = await this.http.get(path + qs);
+    const res: any = data;
+    if (res?.code !== '0') return null;
+    const row = res?.data?.[0];
+    return row
+      ? {
+          last: Number(row?.last),
+          bid: Number(row?.bidPx),
+          ask: Number(row?.askPx),
+          ts: Number(row?.ts),
+        }
+      : null;
+  }
 }

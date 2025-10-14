@@ -1,31 +1,42 @@
-version: '3.9'
-
 services:
   redis:
     image: redis:7
-    container_name: redis
-    command: ['redis-server', '--appendonly', 'yes']
+    container_name: local-redis
     ports:
       - '6379:6379'
-    volumes:
-      - ./data/redis:/data
     restart: unless-stopped
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   mongo:
-    image: mongo:7
-    container_name: mongo
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: root
-      MONGO_INITDB_ROOT_PASSWORD: strong_mongo_password
+    image: mongo:7.0
+    container_name: local-mongo
     ports:
       - '27017:27017'
+    restart: unless-stopped
+    command: ['mongod', '--bind_ip_all']
     volumes:
       - ./data/mongo:/data/db
-    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'mongosh', '--eval', "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redisinsight:
-    image: redislabs/redisinsight:latest
+    image: redis/redisinsight:latest
     container_name: redisinsight
     ports:
       - '8001:8001'
     restart: unless-stopped
+    depends_on:
+      - redis
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8001']
+      interval: 15s
+      timeout: 5s
+      retries: 10

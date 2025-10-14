@@ -8,6 +8,8 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { OkxTradeService } from './okx-trade/okx-trade.service';
 import { FeaturesModule } from './features/features.module';
 import { SignalsModule } from './signal/signal.module';
+import { OrdersModule } from './order/order.module';
+import { StrategiesModule } from './strategies/strategies.module';
 
 @Module({
   imports: [
@@ -19,6 +21,8 @@ import { SignalsModule } from './signal/signal.module';
     CollectorModule,
     FeaturesModule,
     SignalsModule,
+    OrdersModule,
+    StrategiesModule,
   ],
   controllers: [AppController],
   providers: [AppService, OkxTradeService],
