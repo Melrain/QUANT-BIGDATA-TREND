@@ -61,7 +61,7 @@ export class OrderBuilderService {
       return { ok: false, reason: 'noop_action' };
     }
 
-    const instId = this.instIdDefault || sym;
+    const instId = sym;
     const clOrdId = `SIG|${sym}|${reco.ts}`;
 
     // —— 方向映射（下单语义）

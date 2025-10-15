@@ -11,9 +11,11 @@ import {
 
 import { TradeRecoService } from './trade-reco.service';
 import { TradeRecoScheduler } from './trade-reco.scheduler';
+import { CollectorModule } from '@/collector/collector.module';
 
 @Module({
   imports: [
+    CollectorModule,
     ScheduleModule.forRoot(),
     MongooseModule.forFeature([
       { name: Signal.name, schema: SignalSchema },

@@ -2,7 +2,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, SchemaTypes } from 'mongoose';
 
-@Schema({ collection: 'orders_suggested' })
+@Schema({ collection: 'orders_suggested', timestamps: true })
 export class OrderSuggested {
   @Prop({ type: String, required: true }) _id!: string; // `${sym}|${ts}`
   @Prop({ type: String, index: true, required: true }) sym!: string; // BTC-USDT-SWAP

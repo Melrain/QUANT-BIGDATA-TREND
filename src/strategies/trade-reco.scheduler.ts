@@ -3,22 +3,25 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { TradeRecoService } from './trade-reco.service';
+import { SymbolRegistry } from '@/collector/registry/symbol.registry';
 
 @Injectable()
 export class TradeRecoScheduler implements OnModuleInit {
   private readonly logger = new Logger(TradeRecoScheduler.name);
   private running = false;
 
-  private readonly symbols = (process.env.SYMBOLS || 'BTC-USDT-SWAP')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  constructor(
+    private readonly svc: TradeRecoService,
+    private readonly symbolRegistry: SymbolRegistry,
+  ) {}
+
+  private get symbols(): string[] {
+    return this.symbolRegistry.getAll();
+  }
 
   private readonly cronExpr = process.env.CRON_RECO || '45 * * * * *';
   private readonly buildOnBoot =
     (process.env.BUILD_RECO_ON_BOOT || '1') === '1';
-
-  constructor(private readonly svc: TradeRecoService) {}
 
   async onModuleInit() {
     this.logger.log(

@@ -13,9 +13,11 @@ import {
 import { OkxTradeModule } from '@/okx-trade/okx-trade.module';
 import { OrderBuilderScheduler } from './order-builder.scheduler';
 import { OrderBuilderService } from './order-builder.service';
+import { CollectorModule } from '@/collector/collector.module';
 
 @Module({
   imports: [
+    CollectorModule,
     MongooseModule.forFeature([
       { name: OrderSuggested.name, schema: OrderSuggestedSchema },
       { name: TradeReco.name, schema: TradeRecoSchema },

@@ -3,6 +3,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { OrderBuilderService } from './order-builder.service';
+import { SymbolRegistry } from '@/collector/registry/symbol.registry';
 
 @Injectable()
 export class OrderBuilderScheduler implements OnModuleInit {
@@ -10,10 +11,6 @@ export class OrderBuilderScheduler implements OnModuleInit {
   private running = false;
 
   // 多标的支持：环境变量以逗号分隔
-  private readonly symbols = (process.env.SYMBOLS || 'BTC-USDT-SWAP')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
 
   // cron：默认在每分钟第 50 秒执行（在 reco 之后、exec 之前）
   private readonly cronExpr = process.env.CRON_RECO_TO_ORDER || '50 * * * * *';
@@ -22,7 +19,14 @@ export class OrderBuilderScheduler implements OnModuleInit {
   private readonly buildOnBoot =
     (process.env.BUILD_ORDER_ON_BOOT || '1') === '1';
 
-  constructor(private readonly orderBuilder: OrderBuilderService) {}
+  constructor(
+    private readonly orderBuilder: OrderBuilderService,
+    private readonly symbolRegistry: SymbolRegistry,
+  ) {}
+
+  private get symbols(): string[] {
+    return this.symbolRegistry.getAll();
+  }
 
   async onModuleInit() {
     this.logger.log(

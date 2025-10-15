@@ -11,6 +11,7 @@ import { SignalsModule } from './signal/signal.module';
 import { OrdersModule } from './order/order.module';
 import { StrategiesModule } from './strategies/strategies.module';
 import { validateEnv } from './config/env.validation';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 
 @Module({
   imports: [
@@ -25,6 +26,11 @@ import { validateEnv } from './config/env.validation';
     }),
     ScheduleModule.forRoot({
       // Schedule options
+    }),
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call
+    EventEmitterModule.forRoot({
+      global: true,
+      wildcard: true,
     }),
     InfraModule,
     CollectorModule,
