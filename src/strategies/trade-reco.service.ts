@@ -23,20 +23,46 @@ function deriveSide(score: number, thUp: number, thDn: number): PositionState {
 export class TradeRecoService {
   private readonly logger = new Logger(TradeRecoService.name);
 
-  // —— 阈值（来自 .env）
+  // —— 全局默认阈值（可被每币种覆盖）
   private readonly TH_UP = Number(process.env.TH_UP ?? 0.8);
   private readonly TH_DN = Number(process.env.TH_DN ?? -0.8);
   private readonly TH_CLOSE = Number(process.env.TH_CLOSE ?? 0.15);
+
+  // —— 超距（Hysteresis）：开仓与反手的附加“溢出”要求（越大越稳）
+  private readonly HYST_OPEN = Number(process.env.HYSTERESIS_OPEN ?? 0.0);
+  private readonly HYST_REV = Number(process.env.HYSTERESIS_REVERSE ?? 0.1);
+
+  // —— CLOSE 防抖：需要连续 K 根处于中性带；可选最小持仓时长
+  private readonly NEUTRAL_BARS = Number(process.env.NEUTRAL_BARS ?? 3);
+  private readonly CLOSE_REQUIRE_MIN_HOLD =
+    (process.env.CLOSE_REQUIRE_MIN_HOLD ?? '1') === '1';
+
+  // —— 冷静期（以 bar 计）：开仓/反手后 N 根内，不允许 CLOSE/REVERSE
+  private readonly COOLDOWN_BARS = Math.max(
+    0,
+    Number(process.env.COOLDOWN_BARS ?? 2),
+  );
+
+  // —— 反手频控：最近 1 小时最多反手次数
+  private readonly MAX_REVERSES_PER_HOUR = Math.max(
+    1,
+    Number(process.env.MAX_REVERSES_PER_HOUR ?? 3),
+  );
+
+  // —— 下单名义（只是决策文档里带上，真实下单由 order-builder & 执行器决定）
   private readonly DEFAULT_NOTIONAL_USDT = Number(
     process.env.DEFAULT_NOTIONAL_USDT ?? 100,
   );
 
-  // —— 收紧 CLOSE 用的开关（来自 .env）
-  // 需要连续多少根 |score| <= TH_CLOSE 才允许 CLOSE
-  private readonly NEUTRAL_BARS = Number(process.env.NEUTRAL_BARS ?? 3);
-  // 是否要求满足最小持仓时间（risk.minHoldMinutes）
-  private readonly CLOSE_REQUIRE_MIN_HOLD =
-    (process.env.CLOSE_REQUIRE_MIN_HOLD ?? '1') === '1';
+  // —— 每币种覆盖（JSON 字符串）
+  // 例：{"ETH-USDT-SWAP":{"TH_UP":0.85,"TH_DN":-0.85,"TH_CLOSE":0.12,"HYST_OPEN":0.02,"HYST_REV":0.15}}
+  private readonly SYMBOL_OVERRIDES: Record<string, any> = (() => {
+    try {
+      return JSON.parse(process.env.SYMBOL_THRESHOLDS_JSON ?? '{}');
+    } catch {
+      return {};
+    }
+  })();
 
   constructor(
     @InjectModel(Signal.name) private readonly sigModel: Model<SignalDocument>,
@@ -49,7 +75,24 @@ export class TradeRecoService {
     return this.symbolRegistry.getAll();
   }
 
-  /** 读取上一次已生效的持仓状态（从上一条 reco 推断） */
+  /** 币种专属阈值/超距（无则回落到全局） */
+  private getThresh(sym: string) {
+    const o = this.SYMBOL_OVERRIDES[sym] || {};
+    const up = Number.isFinite(o.TH_UP) ? Number(o.TH_UP) : this.TH_UP;
+    const dn = Number.isFinite(o.TH_DN) ? Number(o.TH_DN) : this.TH_DN;
+    const close = Number.isFinite(o.TH_CLOSE)
+      ? Number(o.TH_CLOSE)
+      : this.TH_CLOSE;
+    const hystOpen = Number.isFinite(o.HYST_OPEN)
+      ? Number(o.HYST_OPEN)
+      : this.HYST_OPEN;
+    const hystRev = Number.isFinite(o.HYST_REV)
+      ? Number(o.HYST_REV)
+      : this.HYST_REV;
+    return { up, dn, close, hystOpen, hystRev };
+  }
+
+  /** 从上一条 reco 推断仓位（无真实持仓表时的简化法） */
   private async getLastPos(sym: string): Promise<PositionState> {
     const prev = await this.recoModel.findOne({ sym }).sort({ ts: -1 }).lean();
     if (!prev) return 'FLAT';
@@ -67,9 +110,9 @@ export class TradeRecoService {
     }
   }
 
-  /** 最近一次“进入持仓”的 reco.ts（OPEN_* 或 REVERSE_*），没有则 undefined */
-  private async getLastOpenTs(sym: string): Promise<number | undefined> {
-    const prevOpen = await this.recoModel
+  /** 最近一次“进入持仓”的 reco（OPEN_* / REVERSE_*） */
+  private async getLastOpenReco(sym: string) {
+    return this.recoModel
       .findOne({
         sym,
         action: {
@@ -77,9 +120,8 @@ export class TradeRecoService {
         },
       })
       .sort({ ts: -1 })
-      .lean<{ ts: number }>()
+      .lean<{ ts: number; action: string }>()
       .exec();
-    return prevOpen?.ts;
   }
 
   /** 最近 k 根 signal 是否都在中性带（|score| <= TH_CLOSE） */
@@ -97,8 +139,25 @@ export class TradeRecoService {
       .exec();
     if (!sigs || sigs.length < k) return false;
     return sigs.every(
-      (s) => Math.abs(Number(s?.score ?? NaN)) <= this.TH_CLOSE,
+      (s) => Math.abs(Number(s?.score ?? NaN)) <= this.getThresh(sym).close,
     );
+  }
+
+  /** 最近 60 分钟内的 REVERSE 次数 */
+  private async countReverses1h(sym: string, nowTs: number) {
+    const oneHourAgo = nowTs - 60 * 60 * 1000;
+    return this.recoModel.countDocuments({
+      sym,
+      ts: { $gt: oneHourAgo, $lte: nowTs },
+      action: { $in: ['REVERSE_LONG', 'REVERSE_SHORT'] },
+    });
+  }
+
+  /** 冷静期是否未到：上次 OPEN/REVERSE 到当前相隔的 bar 数 < COOLDOWN_BARS */
+  private inCooldown(lastOpenTs?: number, nowTs?: number) {
+    if (!this.COOLDOWN_BARS || !lastOpenTs || !nowTs) return false;
+    const bars = Math.floor((nowTs - lastOpenTs) / (5 * 60 * 1000));
+    return bars < this.COOLDOWN_BARS;
   }
 
   /** 从最新 signal 生成（或跳过）一条 trade_reco */
@@ -117,8 +176,17 @@ export class TradeRecoService {
     const score = Number(sig.score);
     if (!Number.isFinite(score)) return { ok: false, reason: 'score_nan' };
 
+    // —— 阈值/超距（按币种解析）
+    const {
+      up: TH_UP,
+      dn: TH_DN,
+      close: TH_CLOSE,
+      hystOpen,
+      hystRev,
+    } = this.getThresh(sym);
+
     // —— 用分数推导方向（唯一真侧）
-    const expectedSide = deriveSide(score, this.TH_UP, this.TH_DN);
+    const expectedSide = deriveSide(score, TH_UP, TH_DN);
 
     // —— 若上游 sig.side 存在，则必须一致；不一致则降级跳过，避免脏 reco
     if (sig.side && sig.side !== expectedSide) {
@@ -130,46 +198,58 @@ export class TradeRecoService {
 
     const side = expectedSide;
     const lastPos = await this.getLastPos(sym);
+    const lastOpen = await this.getLastOpenReco(sym);
+    const lastOpenTs = lastOpen?.ts;
 
-    // —— 决策规则（收紧 CLOSE：必须 连续K根中性 + 满足最小持仓时间（可选））
+    // —— “愿望”判定（加入超距）
+    const wantOpenLong = score >= TH_UP + hystOpen;
+    const wantOpenShort = score <= TH_DN - hystOpen;
+    const wantRevToLong = score >= TH_UP + hystRev;
+    const wantRevToShort = score <= TH_DN - hystRev;
+
+    // —— 反手频控
+    const reverseCnt1h = await this.countReverses1h(sym, sig.ts);
+    const reverseBudgetOk = reverseCnt1h < this.MAX_REVERSES_PER_HOUR;
+
+    // —— 决策
     let action:
       | 'OPEN_LONG'
       | 'OPEN_SHORT'
       | 'REVERSE_LONG'
       | 'REVERSE_SHORT'
       | 'CLOSE'
-      | 'HOLD'
-      | 'SKIP';
+      | 'HOLD' = 'HOLD';
 
     if (lastPos === 'FLAT') {
-      if (score >= this.TH_UP && side === 'LONG') action = 'OPEN_LONG';
-      else if (score <= this.TH_DN && side === 'SHORT') action = 'OPEN_SHORT';
+      if (wantOpenLong) action = 'OPEN_LONG';
+      else if (wantOpenShort) action = 'OPEN_SHORT';
       else action = 'HOLD';
     } else {
-      // 已持仓（LONG 或 SHORT）
-      const wantReverseToLong = score >= this.TH_UP && side === 'LONG';
-      const wantReverseToShort = score <= this.TH_DN && side === 'SHORT';
+      // 已持仓
+      const inCool = this.inCooldown(lastOpenTs, sig.ts);
 
-      if (lastPos === 'LONG' && wantReverseToShort) {
-        action = 'REVERSE_SHORT';
-      } else if (lastPos === 'SHORT' && wantReverseToLong) {
-        action = 'REVERSE_LONG';
-      } else {
-        // 进入“是否 CLOSE”的更苛刻判断
-        const neutralNow = Math.abs(score) <= this.TH_CLOSE;
+      // 先考虑反手（但冷静期内或频控超限时禁止反手）
+      if (!inCool && reverseBudgetOk) {
+        if (lastPos === 'LONG' && wantRevToShort) action = 'REVERSE_SHORT';
+        else if (lastPos === 'SHORT' && wantRevToLong) action = 'REVERSE_LONG';
+      }
+
+      // 若未触发反手，考虑 CLOSE（更苛刻）
+      if (!action) {
+        const neutralNow = Math.abs(score) <= TH_CLOSE;
         if (neutralNow) {
           const k = Math.max(1, this.NEUTRAL_BARS);
           const neutralOk = await this.hasConsecutiveNeutral(sym, sig.ts, k);
 
           let holdOk = true;
           if (this.CLOSE_REQUIRE_MIN_HOLD) {
-            const lastOpenTs = await this.getLastOpenTs(sym);
             const minHoldMs =
               Number(process.env.MIN_HOLD_MINUTES ?? 15) * 60 * 1000;
             holdOk = lastOpenTs ? sig.ts - lastOpenTs >= minHoldMs : true;
           }
 
-          action = neutralOk && holdOk ? 'CLOSE' : 'HOLD';
+          // 冷静期命中则不许 CLOSE
+          action = neutralOk && holdOk && !inCool ? 'CLOSE' : 'HOLD';
         } else {
           action = 'HOLD';
         }
@@ -194,14 +274,17 @@ export class TradeRecoService {
       reasons: {
         lastPos,
         sideFromSignal: side,
-        thresholds: { up: this.TH_UP, dn: this.TH_DN, close: this.TH_CLOSE },
+        thresholds: { up: TH_UP, dn: TH_DN, close: TH_CLOSE },
         raw: {
           taker_imb: (sig as any).taker_imb,
           oi_chg: (sig as any).oi_chg,
           meta: {
             ...(sig as any).meta,
-            neutralBarsRequired: this.NEUTRAL_BARS,
-            closeNeedsMinHold: this.CLOSE_REQUIRE_MIN_HOLD,
+            hyst_open: hystOpen,
+            hyst_rev: hystRev,
+            cooldownBars: this.COOLDOWN_BARS,
+            reverseCnt1h,
+            reverseBudget: this.MAX_REVERSES_PER_HOUR,
           },
         },
       },

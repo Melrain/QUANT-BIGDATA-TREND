@@ -16,6 +16,8 @@ import {
 import { OkxTradeService } from '@/okx-trade/okx-trade.service';
 
 type TdMode = 'cross' | 'isolated';
+type PosSide = 'long' | 'short';
+type LastPos = 'LONG' | 'SHORT' | 'FLAT';
 
 @Injectable()
 export class OrderBuilderService {
@@ -25,8 +27,6 @@ export class OrderBuilderService {
     process.env.OKX_TDMODE || 'cross'
   ).toLowerCase() as TdMode;
   private readonly leverage = Number(process.env.DEFAULT_LEVERAGE || 5);
-  private readonly instIdDefault =
-    process.env.INST_ID_DEFAULT || 'BTC-USDT-SWAP';
 
   constructor(
     @InjectModel(TradeReco.name)
@@ -35,6 +35,17 @@ export class OrderBuilderService {
     private readonly orderModel: Model<OrderSuggestedDocument>,
     private readonly okx: OkxTradeService,
   ) {}
+
+  /** 根据 lastPos 返回 CLOSE 所需的 side 与 posSide */
+  private closeDir(lastPos: LastPos): {
+    side: 'buy' | 'sell';
+    posSide?: PosSide;
+  } {
+    // 平多：卖；平空：买；若无历史，默认卖（保守，不建议触发）
+    if (lastPos === 'LONG') return { side: 'sell', posSide: 'long' };
+    if (lastPos === 'SHORT') return { side: 'buy', posSide: 'short' };
+    return { side: 'sell', posSide: undefined };
+  }
 
   /** 从最新的 trade_recos 生成“可直接下单”的建议文档 */
   async buildOne(
@@ -61,25 +72,34 @@ export class OrderBuilderService {
       return { ok: false, reason: 'noop_action' };
     }
 
+    // 用 sym 直接作为 instId；OkxTradeService 内部会 normalize
     const instId = sym;
-    const clOrdId = `SIG|${sym}|${reco.ts}`;
 
-    // —— 方向映射（下单语义）
+    // 更稳的 client 订单号：带上毫秒时间戳，提升幂等可溯性
+    const clOrdId = `SIG|${sym}|${reco.ts}|${Date.now()}`;
+
+    // —— 方向映射（含 long_short 模式可用的 posSide）
+    const lastPos = (reco?.reasons?.lastPos as LastPos) ?? 'FLAT';
     const dir = (() => {
-      if (reco.action === 'OPEN_LONG' || reco.action === 'REVERSE_LONG')
+      if (reco.action === 'OPEN_LONG' || reco.action === 'REVERSE_LONG') {
         return {
           side: 'buy' as const,
           posSide: 'long' as const,
           reduceOnly: false,
         };
-      if (reco.action === 'OPEN_SHORT' || reco.action === 'REVERSE_SHORT')
+      }
+      if (reco.action === 'OPEN_SHORT' || reco.action === 'REVERSE_SHORT') {
         return {
           side: 'sell' as const,
           posSide: 'short' as const,
           reduceOnly: false,
         };
-      if (reco.action === 'CLOSE')
-        return { side: 'sell' as const, posSide: undefined, reduceOnly: true };
+      }
+      if (reco.action === 'CLOSE') {
+        const { side, posSide } = this.closeDir(lastPos);
+        return { side, posSide, reduceOnly: true } as const;
+      }
+      // fallback（理论到不了这里）
       return { side: 'buy' as const, posSide: undefined, reduceOnly: false };
     })();
 
@@ -114,7 +134,7 @@ export class OrderBuilderService {
       _id: `${sym}|${reco.ts}`,
       sym,
       ts: reco.ts,
-      signal: { side: signalSide, score: reco.score, meta: signalMeta }, // ✅ 不再重推导
+      signal: { side: signalSide, score: reco.score, meta: signalMeta },
       decision: {
         action: reco.action,
         reasons: reco.reasons,
@@ -126,11 +146,12 @@ export class OrderBuilderService {
       tdMode: this.tdMode,
       ordType: 'market',
       side: dir.side,
-      posSide: dir.posSide,
+      posSide: dir.posSide, // ✅ long_short_mode 下 executor 可直接使用
       leverage: this.leverage,
       sizeSz,
       reduceOnly: dir.reduceOnly,
       clOrdId,
+
       price: {
         refPrice,
         last: Number.isFinite(last) ? last : undefined,
@@ -163,7 +184,7 @@ export class OrderBuilderService {
     );
 
     this.logger.log(
-      `OrderSuggested upserted: ${doc._id} side=${doc.side} sz=${doc.sizeSz}`,
+      `OrderSuggested upserted: ${doc._id} action=${reco.action} lastPos=${lastPos} side=${doc.side} posSide=${doc.posSide ?? '-'} sz=${doc.sizeSz}`,
     );
     return { ok: true, id: doc._id };
   }

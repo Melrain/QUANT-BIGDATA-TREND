@@ -1,5 +1,5 @@
+/* eslint-disable @typescript-eslint/no-unused-expressions */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
-// src/orders/order-builder.scheduler.ts
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { OrderBuilderService } from './order-builder.service';
@@ -10,14 +10,14 @@ export class OrderBuilderScheduler implements OnModuleInit {
   private readonly logger = new Logger(OrderBuilderScheduler.name);
   private running = false;
 
-  // 多标的支持：环境变量以逗号分隔
-
-  // cron：默认在每分钟第 50 秒执行（在 reco 之后、exec 之前）
+  // 默认在每分钟第 50 秒执行（在 reco 之后、exec 之前）
   private readonly cronExpr = process.env.CRON_RECO_TO_ORDER || '50 * * * * *';
-
-  // 启动时兜底构建一档（幂等）
   private readonly buildOnBoot =
     (process.env.BUILD_ORDER_ON_BOOT || '1') === '1';
+  private readonly concurrency = Math.max(
+    1,
+    Number(process.env.ORDER_SUGGEST_CONCURRENCY || 2),
+  );
 
   constructor(
     private readonly orderBuilder: OrderBuilderService,
@@ -30,85 +30,68 @@ export class OrderBuilderScheduler implements OnModuleInit {
 
   async onModuleInit() {
     this.logger.log(
-      `OrdersScheduler ready: symbols=${this.symbols.join(', ')} cron="${this.cronExpr}"`,
+      `OrdersScheduler ready: symbols=${this.symbols.join(', ')} cron="${this.cronExpr}" concurrency=${this.concurrency}`,
     );
 
-    if (this.buildOnBoot) {
-      const t0 = Date.now();
-      let ok = 0,
-        skip = 0,
-        fail = 0;
+    if (!this.buildOnBoot || this.symbols.length === 0) return;
 
-      for (const sym of this.symbols) {
-        try {
-          const r = await this.orderBuilder.buildOne(sym);
-          if (r.ok) {
-            ok++;
-            this.logger.log(`(boot) OrderSuggested ✓ ${sym} id=${r.id}`);
-          } else {
-            skip++;
-            this.logger.warn(
-              `(boot) OrderSuggested - ${sym} skip: ${r.reason}`,
-            );
-          }
-        } catch (e: any) {
-          fail++;
-          this.logger.error(
-            `(boot) OrderSuggested ✗ ${sym}: ${e?.message || e}`,
-          );
-        }
-      }
-      this.logger.log(
-        `(boot) OrderSuggested summary: ok=${ok} skip=${skip} fail=${fail} in ${Date.now() - t0}ms`,
-      );
-    }
+    const t0 = Date.now();
+    const { ok, skip, fail } = await this.runBatch(this.symbols);
+    this.logger.log(
+      `(boot) OrderSuggested: ok=${ok} skip=${skip} fail=${fail} in ${Date.now() - t0}ms`,
+    );
   }
 
-  @Cron('* * * * * *') // 每秒触发一次，由内部判断是否是我们的 cron 秒位
+  // 直接用表达式定时；不再手算秒位
+  @Cron(process.env.CRON_RECO_TO_ORDER || '50 * * * * *')
   async tick() {
-    const sec = new Date().getSeconds();
-    const targetSec =
-      Number((this.cronExpr.split(' ')[0] || '50').replace('*/', '')) || 50;
-    const isEveryN = this.cronExpr.startsWith('*/');
-    const n = isEveryN
-      ? Number(this.cronExpr.slice(2).split(' ')[0]) || 1
-      : null;
-    const shouldRun = isEveryN ? sec % (n as number) === 0 : sec === targetSec;
-
-    if (!shouldRun) return;
-
     if (this.running) {
       this.logger.warn('Previous tick still running, skip this schedule.');
       return;
     }
-    this.running = true;
+    const syms = this.symbols;
+    if (!syms?.length) {
+      this.logger.warn('No symbols from SymbolRegistry, skip.');
+      return;
+    }
 
+    this.running = true;
     const started = Date.now();
+    try {
+      const { ok, skip, fail } = await this.runBatch(syms);
+      this.logger.log(
+        `OrderSuggested tick: ok=${ok} skip=${skip} fail=${fail} elapsed=${Date.now() - started}ms`,
+      );
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /** 轻量并发池：限制并发度，避免把下游/DB/网络打爆 */
+  private async runBatch(syms: string[]) {
     let ok = 0,
       skip = 0,
       fail = 0;
 
-    try {
-      for (const sym of this.symbols) {
+    const poolSize = Math.min(this.concurrency, syms.length || 1);
+    let idx = 0;
+
+    const worker = async () => {
+      while (idx < syms.length) {
+        const my = idx++;
+        const sym = syms[my];
         try {
           const r = await this.orderBuilder.buildOne(sym);
-          if (r.ok) {
-            ok++;
-            this.logger.log(`OrderSuggested ✓ ${sym} id=${r.id}`);
-          } else {
-            skip++;
-            this.logger.warn(`OrderSuggested - ${sym} skip: ${r.reason}`);
-          }
+          r.ok ? ok++ : skip++;
         } catch (e: any) {
           fail++;
           this.logger.error(`OrderSuggested ✗ ${sym}: ${e?.message || e}`);
         }
       }
-    } finally {
-      this.running = false;
-      this.logger.log(
-        `OrderSuggested tick: ok=${ok} skip=${skip} fail=${fail} elapsed=${Date.now() - started}ms`,
-      );
-    }
+    };
+
+    const workers = Array.from({ length: poolSize }, () => worker());
+    await Promise.allSettled(workers);
+    return { ok, skip, fail };
   }
 }
