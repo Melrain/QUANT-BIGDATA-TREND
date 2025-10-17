@@ -12,6 +12,7 @@ import {
 import { TradeRecoService } from './trade-reco.service';
 
 import { CollectorModule } from '@/collector/collector.module';
+import { TradeRecoListener } from './trade-reco.listener';
 
 @Module({
   imports: [
@@ -22,7 +23,7 @@ import { CollectorModule } from '@/collector/collector.module';
       { name: TradeReco.name, schema: TradeRecoSchema },
     ]),
   ],
-  providers: [TradeRecoService],
+  providers: [TradeRecoService, TradeRecoListener],
   exports: [TradeRecoService],
 })
 export class StrategiesModule {}

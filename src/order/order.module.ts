@@ -21,6 +21,7 @@ import {
   OrderEvalSchema,
 } from '@/infra/mongo/schemas/order-eval.schema';
 import { Bar, BarSchema } from '@/infra/mongo/schemas/bar.schema';
+import { OrderBuilderListener } from './order-builder.listener';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { Bar, BarSchema } from '@/infra/mongo/schemas/bar.schema';
     OrderBuilderService,
     OrderSuggestedEvaluatorScheduler,
     OrderSuggestedEvaluatorService,
+    OrderBuilderListener,
   ],
   exports: [OrderBuilderService],
 })
