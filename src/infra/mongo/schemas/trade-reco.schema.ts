@@ -1,4 +1,5 @@
 // src/infra/mongo/schemas/trade-reco.schema.ts
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 
@@ -8,42 +9,57 @@ export type TradeAction =
   | 'REVERSE_LONG'
   | 'REVERSE_SHORT'
   | 'CLOSE'
-  | 'HOLD'
-  | 'SKIP';
+  | 'ADD_LONG'
+  | 'ADD_SHORT';
 
-@Schema({
-  collection: 'trade_recos',
-  timestamps: { createdAt: true, updatedAt: true },
-})
+export type TradeSide = 'BUY' | 'SELL';
+
+@Schema({ timestamps: true })
 export class TradeReco {
-  @Prop({ type: String, required: true }) _id!: string; // `${sym}|${ts}`
-  @Prop({ type: String, index: true, required: true }) sym!: string;
-  @Prop({ type: Number, index: true, required: true }) ts!: number;
+  // 你目前使用 `${sym}|${ts}` 自定义 _id，如已改为 ObjectId，也兼容
+  @Prop({ type: String })
+  _id!: string;
 
-  @Prop({ type: String, enum: ['BUY', 'SELL', 'FLAT'], required: false })
-  side?: 'BUY' | 'SELL' | 'FLAT'; // ← 新增字段
+  @Prop({ type: String, index: true, required: true })
+  sym!: string; // e.g. 'BTC-USDT-SWAP'
+
+  @Prop({ type: Number, index: true, required: true })
+  ts!: number; // 对齐到 5m 档的时间戳
 
   @Prop({
     type: String,
+    required: true,
     enum: [
       'OPEN_LONG',
       'OPEN_SHORT',
       'REVERSE_LONG',
       'REVERSE_SHORT',
       'CLOSE',
-      'HOLD',
-      'SKIP',
+      'ADD_LONG',
+      'ADD_SHORT',
     ],
-    required: true,
   })
   action!: TradeAction;
 
-  @Prop({ type: Number }) score?: number; // -1 ~ +1
-  @Prop({ type: Number }) notionalUSDT?: number;
-  @Prop({ type: Boolean, default: false }) degraded?: boolean;
+  @Prop({ type: String, required: true, enum: ['BUY', 'SELL'] })
+  side!: TradeSide;
 
-  @Prop({ type: Object }) reasons?: any; // 解释/原始指标
-  @Prop({ type: Object }) risk?: {
+  @Prop({ type: Number, required: true })
+  score!: number;
+
+  @Prop({ type: Number, required: true })
+  notionalUSDT!: number;
+
+  @Prop({ type: Boolean, default: false })
+  degraded!: boolean;
+
+  // 存储一些解释/调试用信息（保持宽松类型以避免频繁改动）
+  @Prop({ type: Object })
+  reasons?: Record<string, any>;
+
+  // 风控参数（供下游参考）
+  @Prop({ type: Object })
+  risk?: {
     stopPct?: number;
     minHoldMinutes?: number;
     cooldownMinutes?: number;
@@ -53,5 +69,5 @@ export class TradeReco {
 export type TradeRecoDocument = HydratedDocument<TradeReco>;
 export const TradeRecoSchema = SchemaFactory.createForClass(TradeReco);
 
-// 常用索引
+// 索引（按需保留）
 TradeRecoSchema.index({ sym: 1, ts: -1 });
