@@ -5,7 +5,7 @@ import { HydratedDocument } from 'mongoose';
 const FEAT_TTL_DAYS = Number(process.env.FEATURE_TTL_DAYS ?? 14);
 const FEAT_TTL_SECONDS = Math.max(1, Math.floor(FEAT_TTL_DAYS * 24 * 60 * 60));
 
-@Schema({ versionKey: false })
+@Schema({ versionKey: false, timestamps: true })
 export class Feature {
   @Prop({ type: String, required: true })
   _id!: string; // `${sym}|${ts}`
@@ -26,12 +26,6 @@ export class Feature {
 
   // 可扩展：统一打分（后续可加）
   @Prop({ type: Number }) score_24h?: number;
-
-  @Prop({ type: Date, default: () => new Date() })
-  createdAt!: Date;
-
-  @Prop({ type: Date, default: () => new Date() })
-  updatedAt!: Date;
 }
 
 export type FeatureDocument = HydratedDocument<Feature>;

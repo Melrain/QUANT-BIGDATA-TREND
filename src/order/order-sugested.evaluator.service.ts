@@ -1,7 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import { OkxTradeService } from '@/okx-trade/okx-trade.service';
-/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, AnyBulkWriteOperation } from 'mongoose';
@@ -14,12 +13,13 @@ import {
   OrderEval,
   OrderEvalDocument,
 } from '@/infra/mongo/schemas/order-eval.schema';
+import { OkxTradeService } from '@/okx-trade/okx-trade.service';
 
 const PERIOD_MS = 5 * 60 * 1000;
 const PRICE_METRIC = process.env.PRICE_METRIC || 'mid';
 const LOOKAHEAD_BARS = [1, 3, 6];
 
-type Dir = 'LONG' | 'SHORT' | 'CLOSE';
+type Dir = 'LONG' | 'SHORT' | 'NONE';
 
 @Injectable()
 export class OrderSuggestedEvaluatorService {
@@ -32,71 +32,69 @@ export class OrderSuggestedEvaluatorService {
     private readonly barModel: Model<BarDocument>,
     @InjectModel(OrderEval.name)
     private readonly evalModel: Model<OrderEvalDocument>,
-    private readonly okxMarket: OkxTradeService, // 用于即时拉K线
+    private readonly okxMarket: OkxTradeService, // 用于拉K线
   ) {}
 
+  /** 根据 reco.action => LONG / SHORT / NONE */
   private dirFromAction(action: string): Dir {
-    if (action === 'OPEN_LONG' || action === 'REVERSE_LONG') return 'LONG';
-    if (action === 'OPEN_SHORT' || action === 'REVERSE_SHORT') return 'SHORT';
-    return 'CLOSE';
+    if (action === 'BUY') return 'LONG';
+    if (action === 'SELL') return 'SHORT';
+    return 'NONE';
   }
 
-  /** 按需确保 5m bars 存在 */
-  private async ensureBars(sym: string, fromTs: number, bars: number) {
+  /** 确保未来bars存在，否则从 OKX 拉取补齐 */
+  private async ensureBars(sym: string, fromTs: number) {
     const needTs = LOOKAHEAD_BARS.map((n) => fromTs + n * PERIOD_MS);
     const existing = await this.barModel
       .find({ sym, metric: PRICE_METRIC, ts: { $in: needTs } })
       .lean()
       .exec();
     const existingTs = new Set(existing.map((b) => b.ts));
-
     const missingTs = needTs.filter((t) => !existingTs.has(t));
     if (missingTs.length === 0) return;
 
     const from = Math.min(...missingTs);
     const to = Math.max(...missingTs) + PERIOD_MS;
+
     this.logger.debug(
-      `[Backfill] ${sym} missing ${missingTs.length} bars (${new Date(
+      `[EvalBackfill] ${sym} missing ${missingTs.length} bars ${new Date(
         from,
-      ).toISOString()}~${new Date(to).toISOString()})`,
+      ).toISOString()}~${new Date(to).toISOString()}`,
     );
 
     try {
       const klines = await this.okxMarket.fetchCandles5m(sym, from, to);
-      if (klines.length === 0) return;
+      if (!klines.length) return;
 
-      const docs: Bar[] = klines.map((k) => ({
-        _id: `${sym}|${PRICE_METRIC}|${k.ts}`,
-        sym,
-        metric: PRICE_METRIC,
-        ts: k.ts,
-        val: (k.high + k.low) / 2, // mid价
-        createdAt: new Date(),
-        updatedAt: new Date(),
+      const ops = klines.map((k) => ({
+        updateOne: {
+          filter: { _id: `${sym}|${PRICE_METRIC}|${k.ts}` },
+          update: {
+            $set: {
+              sym,
+              metric: PRICE_METRIC,
+              ts: k.ts,
+              val: (k.high + k.low) / 2,
+              updatedAt: new Date(),
+            },
+            $setOnInsert: { createdAt: new Date() },
+          },
+          upsert: true,
+        },
       }));
 
-      if (docs.length)
-        await this.barModel.bulkWrite(
-          docs.map((d) => ({
-            updateOne: {
-              filter: { _id: d._id },
-              update: { $set: d },
-              upsert: true,
-            },
-          })),
-          { ordered: false },
-        );
-
+      await this.barModel.bulkWrite(ops, { ordered: false });
       this.logger.log(
-        `[Backfill] ${sym} inserted/updated ${docs.length} bars for eval`,
+        `[EvalBackfill] ${sym} inserted/updated ${ops.length} bars.`,
       );
     } catch (e: any) {
       this.logger.warn(
-        `[Backfill] ${sym} fetchCandles error: ${e?.message || e}`,
+        `[EvalBackfill] ${sym} fetchCandles error: ${e?.message || e}`,
       );
     }
   }
 
+  /** 取指定时间后的bars */
   private async getBars(sym: string, fromTs: number, bars: number) {
     const untilTs = fromTs + bars * PERIOD_MS + PERIOD_MS;
     return this.barModel
@@ -106,15 +104,50 @@ export class OrderSuggestedEvaluatorService {
       .exec();
   }
 
+  private pickPxAt(bars: Bar[], fromTs: number, kBars: number) {
+    const target = fromTs + kBars * PERIOD_MS;
+    const row = bars.find((b) => b.ts >= target);
+    return row?.val;
+  }
+
+  private computeMfeMae(
+    bars: Bar[],
+    entryPx: number,
+    dir: Dir,
+    fromTs: number,
+    horizonBars: number,
+  ) {
+    if (dir === 'NONE') return { mfe: undefined, mae: undefined };
+    const end = fromTs + horizonBars * PERIOD_MS + 1;
+    const window = bars
+      .filter((b) => b.ts > fromTs && b.ts <= end)
+      .map((b) => b.val);
+    if (window.length === 0) return { mfe: undefined, mae: undefined };
+
+    const returns = window.map((px) =>
+      dir === 'LONG'
+        ? ((px - entryPx) / entryPx) * 100
+        : ((entryPx - px) / entryPx) * 100,
+    );
+    return {
+      mfe: Math.max(...returns),
+      mae: Math.min(...returns),
+    };
+  }
+
+  /** 评估单条 OrderSuggested */
   private async evaluateOne(o: OrderSuggested) {
     const { ts, decision, price, sym } = o as any;
     const action = decision?.action;
     if (!ts || !action) return;
 
     const dir = this.dirFromAction(action);
+    if (dir === 'NONE') return; // HOLD 不评估
+
     const entryPx = Number(price?.refPrice ?? NaN);
     if (!Number.isFinite(entryPx)) return;
 
+    await this.ensureBars(sym, ts);
     const bars = await this.getBars(sym, ts, 6);
     if (!bars.length) return;
 
@@ -136,104 +169,73 @@ export class OrderSuggestedEvaluatorService {
     const { mfe, mae } = this.computeMfeMae(bars, entryPx, dir, ts, 6);
 
     const _id = `${sym}|${ts}|${action}|${PRICE_METRIC}`;
-    const complete_n = ret_6b !== undefined ? 6 : ret_3b !== undefined ? 3 : 1;
+    const complete_n = ret_6b ? 6 : ret_3b ? 3 : 1;
+    const latencyMs = Date.now() - ts;
 
-    await this.evalModel.updateOne(
-      { _id },
-      {
-        $set: {
-          _id,
-          sym,
-          ts,
-          action,
-          metric: PRICE_METRIC,
-          dir,
-          entryPx,
-          px_1b,
-          px_3b,
-          px_6b,
-          ret_1b,
-          ret_3b,
-          ret_6b,
-          mfe_6b: mfe,
-          mae_6b: mae,
-          complete_n,
-          updatedAt: new Date(),
-        },
-      },
-      { upsert: true },
-    );
-  }
-
-  private pickPxAt(bars: Bar[], fromTs: number, kBars: number) {
-    const target = fromTs + kBars * PERIOD_MS;
-    const row = bars.find((b) => b.ts >= target);
-    return row?.val;
-  }
-
-  private computeMfeMae(
-    bars: Bar[],
-    entryPx: number,
-    dir: Dir,
-    fromTs: number,
-    horizonBars: number,
-  ) {
-    if (dir === 'CLOSE') return { mfe: undefined, mae: undefined };
-    const end = fromTs + horizonBars * PERIOD_MS + 1;
-    const window = bars
-      .filter((b) => b.ts > fromTs && b.ts <= end)
-      .map((b) => b.val);
-    if (window.length === 0) return { mfe: undefined, mae: undefined };
-
-    const returns = window.map((px) =>
-      dir === 'LONG'
-        ? ((px - entryPx) / entryPx) * 100
-        : ((entryPx - px) / entryPx) * 100,
-    );
-    return {
-      mfe: Math.max(...returns),
-      mae: Math.min(...returns),
+    const doc: Partial<OrderEval> = {
+      _id,
+      sym,
+      ts,
+      action,
+      metric: PRICE_METRIC,
+      dir,
+      entryPx,
+      px_1b,
+      px_3b,
+      px_6b,
+      ret_1b,
+      ret_3b,
+      ret_6b,
+      mfe_6b: mfe,
+      mae_6b: mae,
+      complete_n,
+      latencyMs,
     };
+
+    await this.evalModel.updateOne({ _id }, { $set: doc }, { upsert: true });
+    this.logger.debug(
+      `[Eval] ${sym}@${ts} dir=${dir} ret_1b=${ret_1b?.toFixed?.(2)} ret_6b=${ret_6b?.toFixed?.(2)}`,
+    );
   }
 
-  /** 主逻辑：评估所有 ordersuggested */
+  /** 批量评估全部 ordersuggested（自动回溯+补数据） */
   async evaluateAll() {
     const orders = await this.osModel
       .find()
       .sort({ ts: 1 })
       .lean<OrderSuggested[]>()
       .exec();
-
-    const ops: AnyBulkWriteOperation<OrderEval>[] = [];
     let ok = 0,
       skip = 0;
+    const ops: AnyBulkWriteOperation<OrderEval>[] = [];
 
     for (const o of orders) {
-      const { ts, decision, price, sym } = o as any;
+      const { sym, ts, decision, price } = o as any;
       const action = decision?.action;
-      if (!ts || !action) continue;
+      if (!sym || !ts || !action) continue;
 
       const dir = this.dirFromAction(action);
-      const entryPx = Number(price?.refPrice ?? NaN);
-      if (!Number.isFinite(entryPx)) continue;
-
-      // 确保未来bars存在
-      await this.ensureBars(sym, ts, 6);
-      const bars = await this.getBars(sym, ts, 6);
-      if (bars.length === 0) {
+      if (dir === 'NONE') {
         skip++;
         continue;
       }
 
-      // 计算未来价格
+      const entryPx = Number(price?.refPrice ?? NaN);
+      if (!Number.isFinite(entryPx)) {
+        skip++;
+        continue;
+      }
+
+      await this.ensureBars(sym, ts);
+      const bars = await this.getBars(sym, ts, 6);
+      if (!bars.length) {
+        skip++;
+        continue;
+      }
+
       const px_1b = this.pickPxAt(bars, ts, 1);
       const px_3b = this.pickPxAt(bars, ts, 3);
       const px_6b = this.pickPxAt(bars, ts, 6);
-
-      if (!px_1b && !px_3b && !px_6b) {
-        skip++;
-        continue;
-      }
 
       const f = dir === 'LONG' ? +1 : dir === 'SHORT' ? -1 : 0;
       const ret_1b = Number.isFinite(px_1b)
@@ -247,11 +249,10 @@ export class OrderSuggestedEvaluatorService {
         : undefined;
 
       const { mfe, mae } = this.computeMfeMae(bars, entryPx, dir, ts, 6);
+      const complete_n = ret_6b ? 6 : ret_3b ? 3 : 1;
+      const latencyMs = Date.now() - ts;
 
       const _id = `${sym}|${ts}|${action}|${PRICE_METRIC}`;
-      const complete_n =
-        ret_6b !== undefined ? 6 : ret_3b !== undefined ? 3 : 1;
-
       ops.push({
         updateOne: {
           filter: { _id },
@@ -273,8 +274,10 @@ export class OrderSuggestedEvaluatorService {
               mfe_6b: mfe,
               mae_6b: mae,
               complete_n,
+              latencyMs,
               updatedAt: new Date(),
-            } as Partial<OrderEval>,
+            },
+            $setOnInsert: { createdAt: new Date() },
           },
           upsert: true,
         },
@@ -283,14 +286,13 @@ export class OrderSuggestedEvaluatorService {
     }
 
     if (ops.length) await this.evalModel.bulkWrite(ops, { ordered: false });
-
     this.logger.log(
-      `[OrderEval] upserts=${ops.length}, ok=${ok}, skip=${skip}`,
+      `[OrderEval] evaluated=${ok}, skip=${skip}, upserts=${ops.length}`,
     );
   }
 
-  /** 保留旧接口：评估某个 symbol 最近 limit 条 */
-  async evaluateRecentForSymbol(sym: string, limit = 500) {
+  /** 评估单个 symbol 最近 N 条 */
+  async evaluateRecentForSymbol(sym: string, limit = 200) {
     const orders = await this.osModel
       .find({ sym })
       .sort({ ts: -1 })
@@ -298,11 +300,9 @@ export class OrderSuggestedEvaluatorService {
       .lean<OrderSuggested[]>()
       .exec();
 
-    for (const o of orders) {
-      const { ts } = o as any;
-      if (!ts) continue;
-      await this.ensureBars(sym, ts, 6);
+    for (const o of orders.reverse()) {
       await this.evaluateOne(o);
     }
+    this.logger.log(`[OrderEval] ${sym} recent=${orders.length} evaluated`);
   }
 }

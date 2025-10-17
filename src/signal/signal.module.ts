@@ -14,6 +14,7 @@ import {
   SignalEval,
   SignalEvalSchema,
 } from '@/infra/mongo/schemas/signal-eval.schema';
+import { SignalsListener } from './signal.listener';
 
 // 如果你要接 OkxTradeService，解开下面这行并在 providers 里加入
 // import { OkxTradeService } from '@/trade/okx-trade.service';
@@ -28,7 +29,7 @@ import {
       { name: SignalEval.name, schema: SignalEvalSchema },
     ]),
   ],
-  providers: [SignalsService, SymbolRegistry],
+  providers: [SignalsService, SymbolRegistry, SignalsListener],
   exports: [SignalsService],
 })
 export class SignalsModule {}

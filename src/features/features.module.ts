@@ -13,6 +13,7 @@ import { Bar, BarSchema } from '@/infra/mongo/schemas/bar.schema';
 import { Feature, FeatureSchema } from '@/infra/mongo/schemas/feature.schema';
 
 import { AggregatorService } from './aggregator/aggregator.service';
+import { FeaturesListener } from './listener.ts/features.listener';
 
 @Module({
   imports: [
@@ -26,7 +27,7 @@ import { AggregatorService } from './aggregator/aggregator.service';
   providers: [
     FeaturesWriter,
     AggregatorService,
-
+    FeaturesListener,
     SymbolRegistry, // 若已在别处提供，可以移除
   ],
   exports: [AggregatorService],

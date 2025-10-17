@@ -236,7 +236,7 @@ export class CollectorScheduler implements OnModuleInit {
   }
 
   /** 主调度：默认每分钟，可用 CRON_COLLECT 覆盖；按 symbol 顺序处理，整体发一次事件 */
-  @Cron(process.env.CRON_COLLECT ?? '*/1 * * * *')
+  @Cron(process.env.CRON_COLLECT ?? '*/2 * * * *')
   async tick() {
     if (this.running) {
       this.logger.warn('Previous tick still running, skip.');
@@ -294,6 +294,7 @@ export class CollectorScheduler implements OnModuleInit {
           meta: { elapsedMs, ok, fail },
         })}`,
       );
+      this.running = false;
     } finally {
       this.running = false;
     }

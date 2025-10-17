@@ -4,7 +4,7 @@ import { HydratedDocument } from 'mongoose';
 const TTL_DAYS = Number(process.env.BAR_TTL_DAYS ?? 14);
 const TTL_SECONDS = Math.max(1, Math.floor(TTL_DAYS * 24 * 60 * 60));
 
-@Schema({ versionKey: false })
+@Schema({ versionKey: false, timestamps: true })
 export class Bar {
   // 注意：这里不“重写”Document 的 _id，而是定义字段并由 SchemaFactory 处理
   @Prop({ type: String, required: true })
@@ -21,12 +21,6 @@ export class Bar {
 
   @Prop({ type: Number, required: true })
   val!: number;
-
-  @Prop({ type: Date, default: () => new Date() })
-  createdAt!: Date;
-
-  @Prop({ type: Date, default: () => new Date() })
-  updatedAt!: Date;
 }
 
 export type BarDocument = HydratedDocument<Bar>;

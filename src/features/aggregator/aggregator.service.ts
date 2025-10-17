@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import { Injectable, Logger } from '@nestjs/common';
@@ -192,5 +193,150 @@ export class AggregatorService {
 
     if (!out.length) return { written: 0, skipped: targets.length };
     return this.writer.upsertMany(out as any);
+  }
+
+  /** 生成最近 backfillBars 根的特征行（不落库，交给 writer 写） */
+  async buildForSymbol(
+    sym: string,
+    opts: {
+      backfillBars?: number; // 要产出的最近 K 根（默认 4）
+      lookbackMin?: number; // 从历史抓多远来计算 z/oi 等（默认 24h）
+      allowCarryMs?: number; // 允许的前向沿用窗口（默认 10 分钟）
+    } = {},
+  ) {
+    const backfillBars = Math.max(1, opts.backfillBars ?? 4);
+    const lookbackMin = Math.max(60, opts.lookbackMin ?? 24 * 60);
+    const allowCarryMs = Math.max(0, opts.allowCarryMs ?? 10 * 60 * 1000);
+
+    // 取指定 lookback 范围内的所有需要的 bar
+    const rows = await this.loadBars(sym, lookbackMin);
+    if (!rows.length)
+      return [] as Array<{
+        sym: string;
+        ts: number;
+        taker_imb?: number;
+        oi_chg?: number;
+        vol_z_24h?: number;
+        ls_all_z_24h?: number;
+        ls_eacc_z_24h?: number;
+        ls_epos_z_24h?: number;
+        score_24h?: number;
+      }>;
+
+    // metric -> (ts -> val)
+    const m2 = new Map<Metric, Map<number, number>>();
+    for (const m of NEED) m2.set(m, new Map());
+    for (const r of rows) m2.get(r.metric)!.set(this.align5m(r.ts), r.val);
+
+    // 全部对齐的 ts 升序 & 选最近 K 根作为产出目标
+    const tsAll = Array.from(new Set(rows.map((r) => this.align5m(r.ts)))).sort(
+      (a, b) => a - b,
+    );
+    const targets = tsAll.slice(-backfillBars);
+
+    // 工具：取到 uptoTs（含）向前 minutes 窗口内的已对齐序列
+    const takeSeries = (m: Metric, uptoTs: number, minutes: number) => {
+      const sinceTs = uptoTs - minutes * 60 * 1000 + PERIOD_MS;
+      const mmap = m2.get(m)!;
+      return tsAll
+        .filter((t) => t >= sinceTs && t <= uptoTs && mmap.has(t))
+        .map((t) => mmap.get(t)!);
+    };
+
+    // 工具：允许在 allowCarryMs 内做前值沿用（LOCF）
+    const carry = (m: Metric, ts: number) => {
+      const minTs = ts - allowCarryMs;
+      for (let t = ts; t >= minTs; t -= PERIOD_MS) {
+        const v = m2.get(m)!.get(t);
+        if (v !== undefined) return v;
+      }
+      return undefined;
+    };
+
+    const out: Array<{
+      sym: string;
+      ts: number;
+      taker_imb?: number;
+      oi_chg?: number;
+      vol_z_24h?: number;
+      ls_all_z_24h?: number;
+      ls_eacc_z_24h?: number;
+      ls_epos_z_24h?: number;
+      score_24h?: number;
+    }> = [];
+
+    for (const ts of targets) {
+      // —— 基础量
+      const buy =
+        m2.get('taker_vol_buy')!.get(ts) ?? carry('taker_vol_buy', ts);
+      const sell =
+        m2.get('taker_vol_sell')!.get(ts) ?? carry('taker_vol_sell', ts);
+      const oiNow =
+        m2.get('open_interest')!.get(ts) ?? carry('open_interest', ts);
+      const oiPrev = m2.get('open_interest')!.get(ts - PERIOD_MS);
+
+      // —— 基础特征
+      const eps = 1e-9;
+      const taker_imb =
+        buy !== undefined && sell !== undefined
+          ? (buy - sell) / Math.max(buy + sell, eps)
+          : undefined;
+
+      const oi_chg =
+        oiNow !== undefined && oiPrev !== undefined && Math.abs(oiPrev) > 0
+          ? oiNow / oiPrev - 1
+          : undefined;
+
+      // —— 24h Z 分数
+      const vol_z_24h = this.z(takeSeries('contracts_volume', ts, 24 * 60));
+      const ls_all_z_24h = this.z(takeSeries('longshort_all_acc', ts, 24 * 60));
+      const ls_eacc_z_24h = this.z(
+        takeSeries('longshort_elite_acc', ts, 24 * 60),
+      );
+      const ls_epos_z_24h = this.z(
+        takeSeries('longshort_elite_pos', ts, 24 * 60),
+      );
+
+      // —— 组合打分（简单线性加权，可后续再调）
+      const parts: number[] = [];
+      if (Number.isFinite(taker_imb as number))
+        parts.push((taker_imb as number) * 1.0);
+      if (Number.isFinite(oi_chg as number))
+        parts.push((oi_chg as number) * 0.5);
+      if (Number.isFinite(vol_z_24h)) parts.push(vol_z_24h * 0.25);
+      if (Number.isFinite(ls_all_z_24h)) parts.push(ls_all_z_24h * 0.25);
+      if (Number.isFinite(ls_eacc_z_24h)) parts.push(ls_eacc_z_24h * 0.25);
+      if (Number.isFinite(ls_epos_z_24h)) parts.push(ls_epos_z_24h * 0.25);
+      const score_24h = parts.length
+        ? parts.reduce((a, b) => a + b, 0)
+        : undefined;
+
+      // —— 过滤全 undefined 的行
+      const hasAny = [
+        taker_imb,
+        oi_chg,
+        vol_z_24h,
+        ls_all_z_24h,
+        ls_eacc_z_24h,
+        ls_epos_z_24h,
+        score_24h,
+      ].some((v) => typeof v === 'number' && Number.isFinite(v));
+
+      if (hasAny) {
+        out.push({
+          sym,
+          ts,
+          taker_imb,
+          oi_chg,
+          vol_z_24h,
+          ls_all_z_24h,
+          ls_eacc_z_24h,
+          ls_epos_z_24h,
+          score_24h,
+        });
+      }
+    }
+
+    return out;
   }
 }

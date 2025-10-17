@@ -7,7 +7,7 @@ const STATUS_TTL_SECONDS = Math.max(
   Math.floor(STATUS_TTL_DAYS * 24 * 60 * 60),
 );
 
-@Schema({ versionKey: false })
+@Schema({ versionKey: false, timestamps: true })
 export class Status {
   @Prop({ type: String, required: true })
   _id!: string; // `${sym}|${ts}` 或 `${ts}`（看你怎么写）
@@ -32,9 +32,6 @@ export class Status {
 
   @Prop({ type: Boolean, default: false })
   degraded?: boolean; // 本轮是否降级运行（例如大量空返回）
-
-  @Prop({ type: Date, default: () => new Date() })
-  createdAt!: Date;
 }
 
 export type StatusDocument = HydratedDocument<Status>;
