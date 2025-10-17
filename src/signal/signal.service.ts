@@ -187,4 +187,9 @@ export class SignalsService {
 
     return { made: 1, side };
   }
+
+  /** 别名：兼容调度器调用 */
+  async buildOne(sym: string) {
+    return this.evaluateOnce(sym);
+  }
 }

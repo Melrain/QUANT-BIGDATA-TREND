@@ -12,7 +12,7 @@ import {
   TradeRecoSchema,
 } from '@/infra/mongo/schemas/trade-reco.schema';
 import { OkxTradeModule } from '@/okx-trade/okx-trade.module';
-import { OrderBuilderScheduler } from './order-builder.scheduler';
+
 import { OrderBuilderService } from './order-builder.service';
 import { CollectorModule } from '@/collector/collector.module';
 import { OrderSuggestedEvaluatorScheduler } from './order-suggested.evaluator.scheduler';
@@ -38,7 +38,6 @@ import { Bar, BarSchema } from '@/infra/mongo/schemas/bar.schema';
   ],
   providers: [
     OrderBuilderService,
-    OrderBuilderScheduler,
     OrderSuggestedEvaluatorScheduler,
     OrderSuggestedEvaluatorService,
   ],

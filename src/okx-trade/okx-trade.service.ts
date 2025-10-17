@@ -479,6 +479,91 @@ export class OkxTradeService implements OnModuleInit {
     return Number((k * tickSz).toFixed(12));
   }
 
+  /**
+   * 拉取某区间内的 5m K 线（公共行情，不需要签名）
+   * OKX /api/v5/market/candles 返回倒序（新→旧），每条格式：
+   * [ ts, open, high, low, close, vol, volCcy, volCcyQuote, confirm ]
+   *
+   * @param instIdRaw 例如 "ETH-USDT-SWAP"（大小写/缺后缀会自动规范化）
+   * @param fromMs    起始时间（含），毫秒
+   * @param toMs      结束时间（含），毫秒
+   * @param limit     每次请求条数（OKX最大 300）
+   * @returns         升序数组：{ ts, open, high, low, close }
+   */
+  async fetchCandles5m(
+    instIdRaw: string,
+    fromMs: number,
+    toMs: number,
+    limit = 300,
+  ): Promise<
+    Array<{
+      ts: number;
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+    }>
+  > {
+    const instId = this.normalizeInstId(instIdRaw);
+
+    // 容错：区间反了直接交换
+    if (toMs < fromMs) [fromMs, toMs] = [toMs, fromMs];
+
+    const path = '/api/v5/market/candles';
+    const out: Array<{
+      ts: number;
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+    }> = [];
+
+    // OKX candles 支持分页参数 after（取大于该时间戳的更新）
+    // 我们自左向右推进：每轮用当前已取到的最大 ts 作为 after
+    let after = Math.max(0, fromMs - 1);
+    let guard = 0; // 防御死循环
+
+    while (after < toMs && guard++ < 50) {
+      const qs =
+        `?instId=${encodeURIComponent(instId)}` +
+        `&bar=5m&after=${after}&limit=${Math.min(Math.max(1, limit), 300)}`;
+
+      const { data } = await this.http.get(path + qs); // 公共行情无需签名
+      const res: any = data;
+      const rows = Array.isArray(res?.data) ? res.data : [];
+
+      if (!rows.length) break;
+
+      // rows 是倒序（新→旧），我们统一过滤到所需区间并推进游标
+      let maxTsThisPage = after;
+      for (const r of rows) {
+        const ts = Number(r?.[0]);
+        const open = Number(r?.[1]);
+        const high = Number(r?.[2]);
+        const low = Number(r?.[3]);
+        const close = Number(r?.[4]);
+
+        if (!Number.isFinite(ts)) continue;
+        if (ts < fromMs || ts > toMs) {
+          // 不在目标窗口内就跳过
+          if (ts > maxTsThisPage) maxTsThisPage = ts;
+          continue;
+        }
+
+        out.push({ ts, open, high, low, close });
+        if (ts > maxTsThisPage) maxTsThisPage = ts;
+      }
+
+      // 推进分页游标；如果没有更大的 ts，说明到头了
+      if (maxTsThisPage <= after) break;
+      after = maxTsThisPage;
+    }
+
+    // 统一升序返回，便于上层“按目标 ts 就近取值”
+    out.sort((a, b) => a.ts - b.ts);
+    return out;
+  }
+
   private levCache = new Map<string, { key: string; ts: number }>(); // key = `${mgnMode}:${lever}:${posSide??''}`
 
   /** 幂等设置杠杆（减少重复调用 / 429） */

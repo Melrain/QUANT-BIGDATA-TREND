@@ -11,7 +11,7 @@ import { MongoModule } from '@/infra/mongo/mongo.module';
 import { SymbolRegistry } from '@/collector/registry/symbol.registry';
 import { Bar, BarSchema } from '@/infra/mongo/schemas/bar.schema';
 import { Feature, FeatureSchema } from '@/infra/mongo/schemas/feature.schema';
-import { AggregatorScheduler } from './aggregator/aggregator.scheduler';
+
 import { AggregatorService } from './aggregator/aggregator.service';
 
 @Module({
@@ -26,7 +26,7 @@ import { AggregatorService } from './aggregator/aggregator.service';
   providers: [
     FeaturesWriter,
     AggregatorService,
-    AggregatorScheduler,
+
     SymbolRegistry, // 若已在别处提供，可以移除
   ],
   exports: [AggregatorService],

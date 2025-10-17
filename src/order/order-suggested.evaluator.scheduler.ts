@@ -15,7 +15,7 @@ export class OrderSuggestedEvaluatorScheduler {
     private readonly symbols: SymbolRegistry,
   ) {}
 
-  @Cron(process.env.CRON_ORDER_EVAL || '10 * * * * *')
+  @Cron(process.env.CRON_ORDER_EVAL || '1 * * * * *')
   async tick() {
     const syms = this.symbols.getAll();
     for (const sym of syms) {

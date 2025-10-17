@@ -7,10 +7,9 @@ import { Signal, SignalSchema } from './schemas/signal.schema';
 import { MongoModule } from '@/infra/mongo/mongo.module';
 import { SymbolRegistry } from '@/collector/registry/symbol.registry';
 import { Feature, FeatureSchema } from '@/infra/mongo/schemas/feature.schema';
-import { SignalsScheduler } from './signal.scheduler';
+
 import { SignalsService } from './signal.service';
-import { SignalEvaluatorScheduler } from './signal-evaluator.scheduler';
-import { SignalEvaluatorService } from './signal-evaluator.service';
+
 import {
   SignalEval,
   SignalEvalSchema,
@@ -29,13 +28,7 @@ import {
       { name: SignalEval.name, schema: SignalEvalSchema },
     ]),
   ],
-  providers: [
-    SignalsService,
-    SignalsScheduler,
-    SymbolRegistry,
-    SignalEvaluatorScheduler,
-    SignalEvaluatorService,
-  ],
+  providers: [SignalsService, SymbolRegistry],
   exports: [SignalsService],
 })
 export class SignalsModule {}

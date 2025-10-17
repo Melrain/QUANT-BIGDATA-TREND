@@ -10,7 +10,7 @@ import {
 } from '@/infra/mongo/schemas/trade-reco.schema';
 
 import { TradeRecoService } from './trade-reco.service';
-import { TradeRecoScheduler } from './trade-reco.scheduler';
+
 import { CollectorModule } from '@/collector/collector.module';
 
 @Module({
@@ -22,7 +22,7 @@ import { CollectorModule } from '@/collector/collector.module';
       { name: TradeReco.name, schema: TradeRecoSchema },
     ]),
   ],
-  providers: [TradeRecoService, TradeRecoScheduler],
+  providers: [TradeRecoService],
   exports: [TradeRecoService],
 })
 export class StrategiesModule {}
