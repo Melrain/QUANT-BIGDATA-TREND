@@ -137,9 +137,17 @@ export class TradeRecoService {
     const lastPos = await this.getLastPos(sym);
 
     // 若上游 sig.side 存在，则必须一致；不一致则跳过，避免脏 reco
-    if (sig.side && sig.side !== targetPos) {
+    // —— 与上游信号的一致性：仅“明确相反”才阻断；FLAT 允许按电平继续
+    const sideIsBlocking =
+      sig.side && sig.side !== 'FLAT' && sig.side !== targetPos;
+
+    // 记录一个“弱降级”标记：signal 是 FLAT，但我们按电平要动
+    const degraded =
+      !sideIsBlocking && sig.side === 'FLAT' && targetPos !== 'FLAT';
+
+    if (sideIsBlocking) {
       this.logger.warn(
-        `[Reco] degrade ${sym}@${sig.ts}: sig.side=${sig.side} != target=${targetPos} score=${score0} (thUp=${thUp}, thDn=${thDn})`,
+        `[Reco] conflict ${sym}@${sig.ts}: sig.side=${sig.side} vs target=${targetPos}, score=${score0} (thUp=${thUp}, thDn=${thDn})`,
       );
       return { ok: false, reason: 'signal_inconsistent' };
     }
@@ -189,17 +197,16 @@ export class TradeRecoService {
       _id,
       sym,
       ts: Number(sig.ts),
-      action, // ← 仅 BUY / SELL
-      // 供执行层使用：方向（交易侧）
+      action, // 'BUY' | 'SELL'
       side: action === 'BUY' ? 'BUY' : 'SELL',
-      // 供执行层/回测：意图与上下文
       score: score0,
       notionalUSDT: this.DEFAULT_NOTIONAL_USDT,
-      degraded: false,
+
+      degraded, // ← 这里改为上面的变量
       reasons: {
         lastPos,
-        targetPos, // 我们希望到达的仓位方向
-        thresholds: { up: thUp, dn: thDn }, // 记录最终采用的阈值
+        targetPos,
+        thresholds: { up: thUp, dn: thDn },
         raw: {
           taker_imb: (sig as any).taker_imb,
           oi_chg: (sig as any).oi_chg,
@@ -211,6 +218,7 @@ export class TradeRecoService {
             requireSlope: this.REQUIRE_SLOPE,
             minMomentum: this.MIN_MOMENTUM,
             validUntil,
+            degradedBecauseFlat: degraded, // ← 额外放个旗子，便于离线分析
           },
         },
       },
@@ -219,8 +227,6 @@ export class TradeRecoService {
         minHoldMinutes: Number(process.env.MIN_HOLD_MINUTES ?? 15),
         cooldownMinutes: Number(process.env.COOLDOWN_MINUTES ?? 10),
       },
-      // 新增：帮助后续推断持仓
-      // （执行层真正成交后也可在它那边回写一个“已成交状态”，这里先给出“意图上的posAfter”）
       ...({ posAfter } as any),
       validUntil,
     };
